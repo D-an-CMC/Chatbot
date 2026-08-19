@@ -45,6 +45,12 @@ class SupabaseGradeStore(GradeStore):
         # subject_name rong => nap TAT CA cac mon; co gia tri => chi 1 mon do.
         self.subject_name = (subject_name or "").strip()
         self.client = None
+        # Bang tra cuu on dinh (lop / phan lop theo nam) — cache sau lan nap dau
+        # de fetch_for_codes() chi phai query lai bang diem (real-time), khong
+        # phai keo lai classes/enrollments moi lan.
+        self._classes_by_id: Optional[Dict[int, str]] = None
+        self._enroll_by_student_year: Optional[Dict[tuple, str]] = None
+        self._student_id_by_code: Optional[Dict[str, int]] = None
 
     def _get_client(self):
         if self.client is None:
@@ -84,38 +90,94 @@ class SupabaseGradeStore(GradeStore):
             offset += page_size
         return rows
 
-    def _fetch_records(self) -> List[GradeRecord]:
+    def _ensure_lookup_maps(self) -> None:
+        """Nap (mot lan) cac bang tra cuu ON DINH trong nam hoc: lop, phan lop
+        theo nam (suy ra class_name), va anh xa ma hoc sinh -> student_id (de loc
+        bang diem theo cot truc tiep). Cache lai de fetch_for_codes() chi phai
+        query lai bang diem (real-time)."""
+        if (self._classes_by_id is not None and self._enroll_by_student_year is not None
+                and self._student_id_by_code is not None):
+            return
         client = self._get_client()
-
-        # 1) Bang tra cuu nho — nap toan bo (co phan trang de an toan)
-        classes_by_id: Dict[int, str] = {
+        self._classes_by_id = {
             c["class_id"]: c["class_name"]
             for c in self._fetch_all_pages(
                 lambda: client.table("classes").select("class_id, class_name")
             )
         }
-        enroll_by_student_year: Dict[tuple, str] = {}
+        self._enroll_by_student_year = {}
         for e in self._fetch_all_pages(
             lambda: client.table("student_enrollments").select("student_id, class_id, school_year_id")
         ):
-            enroll_by_student_year[(e["student_id"], e["school_year_id"])] = classes_by_id.get(e["class_id"], "")
-
-        # 2) Ket qua mon hoc + cac bang lien quan (embed qua PostgREST).
-        #    Neu subject_name rong => lay TAT CA cac mon; nguoc lai loc 1 mon.
-        def _build_results_query():
-            q = client.table("subject_results").select(
-                "result_id, dtb_mhk, dtb_mcn, ranking, teacher_comment,"
-                "students(student_id, full_name, student_code, date_of_birth),"
-                "semesters(semester_name, term_order, school_years(school_year_id, year_name)),"
-                "subjects!inner(subject_name),"
-                "grade_items(score, grade_types(type_code))"
+            self._enroll_by_student_year[(e["student_id"], e["school_year_id"])] = \
+                self._classes_by_id.get(e["class_id"], "")
+        self._student_id_by_code = {
+            s["student_code"]: s["student_id"]
+            for s in self._fetch_all_pages(
+                lambda: client.table("students").select("student_id, student_code")
             )
-            if self.subject_name:
-                q = q.eq("subjects.subject_name", self.subject_name)
-            return q
+            if s.get("student_code")
+        }
 
-        rows = self._fetch_all_pages(_build_results_query)
+    def _codes_to_ids(self, codes: List[str]) -> List[int]:
+        """Doi ma hoc sinh -> student_id (so). Neu co ma chua co trong cache
+        (hoc sinh moi them sau khi khoi dong) thi tra cuu bo sung truc tiep."""
+        self._ensure_lookup_maps()
+        mp = self._student_id_by_code or {}
+        ids = [mp[c] for c in codes if c in mp]
+        missing = [c for c in codes if c not in mp]
+        if missing:
+            client = self._get_client()
+            resp = client.table("students").select("student_id, student_code").in_("student_code", missing).execute()
+            for s in resp.data or []:
+                mp[s["student_code"]] = s["student_id"]
+                ids.append(s["student_id"])
+        return ids
 
+    def _build_results_query(self, student_ids: Optional[List[int]] = None):
+        """Query bang diem (subject_results) + cac bang lien quan. Neu truyen
+        student_ids -> CHI lay diem cua nhung hoc sinh do (loc theo cot truc tiep
+        subject_results.student_id — nhanh, dung cho tra cuu real-time).
+        subject_name (neu co) van gioi han 1 mon."""
+        client = self._get_client()
+        q = client.table("subject_results").select(
+            "result_id, dtb_mhk, dtb_mcn, ranking, teacher_comment, student_id,"
+            "students(student_id, full_name, student_code, date_of_birth),"
+            "semesters(semester_name, term_order, school_years(school_year_id, year_name)),"
+            "subjects!inner(subject_name),"
+            "grade_items(score, grade_types(type_code))"
+        )
+        if self.subject_name:
+            q = q.eq("subjects.subject_name", self.subject_name)
+        if student_ids:
+            q = q.in_("student_id", list(student_ids))
+        return q
+
+    def _fetch_records(self, student_ids: Optional[List[int]] = None) -> List[GradeRecord]:
+        self._ensure_lookup_maps()
+        rows = self._fetch_all_pages(lambda: self._build_results_query(student_ids))
+        return self._rows_to_records(rows)
+
+    def fetch_for_codes(self, codes) -> List[GradeRecord]:
+        """Lay diem MOI NHAT (query truc tiep Supabase) cho mot nhom hoc sinh
+        theo ma. Dung khi tra cuu diem/xep loai/thong ke de luon phan anh diem
+        vua duoc cap nhat — khong dung snapshot cache. Neu loi -> fallback ve
+        du lieu da nap trong bo nho."""
+        codes = [c for c in (codes or []) if c]
+        if not codes:
+            return []
+        try:
+            ids = self._codes_to_ids(codes)
+            if not ids:
+                return []
+            return self._fetch_records(student_ids=ids)
+        except Exception as e:
+            logger.error("Loi khi lay diem real-time (%s) — dung cache: %s", codes, e)
+            codeset = set(codes)
+            return [r for r in self.records if r.student_id in codeset]
+
+    def _rows_to_records(self, rows: list) -> List[GradeRecord]:
+        enroll_by_student_year = self._enroll_by_student_year or {}
         records: List[GradeRecord] = []
         for row in rows:
             student = row.get("students") or {}

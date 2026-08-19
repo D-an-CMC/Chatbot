@@ -392,6 +392,15 @@ class GradeStore:
 
     # -- tra cuu ban ghi --------------------------------------------------
 
+    def fetch_for_codes(self, codes) -> List["GradeRecord"]:
+        """Lay ban ghi diem cho mot nhom hoc sinh theo ma. Ban co so (Excel)
+        doc tu du lieu da nap; SupabaseGradeStore ghi de de query truc tiep DB
+        (real-time). Nho vay engine dung chung 1 API cho ca 2 che do."""
+        codeset = {c for c in (codes or []) if c}
+        if not codeset:
+            return []
+        return [r for r in self.records if r.student_id in codeset]
+
     def search(
         self,
         name: Optional[str] = None,

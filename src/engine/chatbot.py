@@ -216,6 +216,8 @@ _TIMETABLE_KEYWORDS = [
 ]
 _EXAM_KEYWORDS = [
     "lịch thi", "lịch kiểm tra", "thi cuối kỳ", "thi giữa kỳ", "ngày thi", "thi khi nào",
+    "thi môn gì", "thi những môn", "thi hôm nào", "khi nào thi", "bao giờ thi",
+    "sắp thi", "sắp tới thi", "có thi không", "lịch thi cử",
 ]
 _ATTENDANCE_KEYWORDS = [
     "điểm danh", "vắng học", "nghỉ học", "đi học đầy đủ", "có mặt",
@@ -258,6 +260,18 @@ _SUMMARY_KEYWORDS = [
     "tổng kết năm", "kết quả học kỳ", "kết quả cả năm", "danh hiệu", "được học sinh giỏi",
     "lên lớp",
 ]
+# Cac cum bao hieu nguoi dung muon xem diem CUA TAT CA CAC NAM HOC (khong gioi
+# han nam hien tai). Vd: "toan bo diem qua cac nam", "tat ca cac nam".
+_ALL_YEARS_KEYWORDS = [
+    "qua các năm", "qua từng năm", "tất cả các năm", "toàn bộ các năm", "tất cả năm học",
+    "mọi năm", "các năm học", "hết các năm", "qua các năm học", "toàn bộ điểm qua",
+    "từ trước đến nay", "từ trước tới nay", "lịch sử điểm",
+]
+
+
+def wants_all_years(question: str) -> bool:
+    q = question.lower()
+    return any(k in q for k in _ALL_YEARS_KEYWORDS)
 
 
 def classify_intent(question: str) -> str:
@@ -406,6 +420,31 @@ class ChatbotEngine:
 
     # -- tra cuu diem (mac dinh) ------------------------------------------
 
+    def _current_school_year(self) -> Optional[str]:
+        """Nam hoc HIEN TAI theo ngay thuc (tu Supabase, co fallback ve nam gan
+        nhat khi nghi he). Neu khong co school_info (che do Excel) thi lay nam
+        moi nhat co trong du lieu diem."""
+        if self.school_info is not None:
+            try:
+                cur = self.school_info.get_current_term(date.today().isoformat())
+                if cur and cur.get("year_name"):
+                    return cur["year_name"]
+            except Exception as e:
+                logger.warning("Khong lay duoc nam hoc hien tai: %s", e)
+        years = self.store.list_school_years()
+        return years[-1] if years else None
+
+    def _resolve_year_filter(self, question: str, explicit_year: Optional[str]) -> Optional[str]:
+        """Xac dinh nam hoc can loc khi tra cuu diem:
+        - Neu cau hoi neu ro nam (vd 2024-2025) -> dung nam do.
+        - Neu hoi "qua cac nam / tat ca cac nam" -> None (khong loc, lay het).
+        - Mac dinh (hoi chung chung) -> nam hoc HIEN TAI."""
+        if explicit_year:
+            return explicit_year
+        if wants_all_years(question):
+            return None
+        return self._current_school_year()
+
     def _resolve_records(
         self, question: str, forced_student_code: Optional[str] = None,
     ) -> Tuple[List[GradeRecord], List[str]]:
@@ -422,34 +461,37 @@ class ChatbotEngine:
         name_query = filters.pop("name_query")
         subject = filters["subject"]
 
+        # Nam hoc: mac dinh nam hien tai; neu neu ro nam -> nam do; neu hoi
+        # "qua cac nam" -> tat ca (None).
+        year_filter = self._resolve_year_filter(question, filters["school_year"])
+
+        # Xac dinh danh sach MA hoc sinh can lay diem (viec khop ten dua tren
+        # chi muc ten da nap; ma/ten it thay doi). Sau do lay DIEM MOI NHAT truc
+        # tiep tu nguon (real-time voi Supabase) qua fetch_for_codes().
         if forced_student_code:
-            records = [
-                r for r in self.store.records
-                if r.student_id == forced_student_code
-                and (not filters["class_name"] or r.class_name.upper() == filters["class_name"].upper())
-                and (not filters["school_year"] or r.school_year == filters["school_year"])
-                and (not filters["semester"] or r.semester == filters["semester"])
-                and (not subject or r.subject == subject)
-            ]
-            return _limit_records(records), []
+            codes = [forced_student_code]
+            suggestions: List[str] = []
+        else:
+            if not name_query:
+                return [], []
+            matched_names = self.store.find_matching_names(name_query)
+            if not matched_names:
+                return [], []
+            suggestions = matched_names
+            nameset = set(matched_names)
+            codes = sorted({r.student_id for r in self.store.records if r.name in nameset and r.student_id})
+            if not codes:
+                return [], matched_names
 
-        if not name_query:
-            return [], []
-
-        matched_names = self.store.find_matching_names(name_query)
-        if not matched_names:
-            return [], []
-
-        records: List[GradeRecord] = []
-        for name in matched_names:
-            records.extend(self.store.search(
-                name=name,
-                class_name=filters["class_name"],
-                school_year=filters["school_year"],
-                semester=filters["semester"],
-                subject=subject,
-            ))
-        return _limit_records(records), matched_names
+        fresh = self.store.fetch_for_codes(codes)
+        records = [
+            r for r in fresh
+            if (not filters["class_name"] or r.class_name.upper() == filters["class_name"].upper())
+            and (not year_filter or r.school_year == year_filter)
+            and (not filters["semester"] or r.semester == filters["semester"])
+            and (not subject or r.subject == subject)
+        ]
+        return _limit_records(records), suggestions
 
     # -- danh sach lop / thoi khoa bieu -----------------------------------
 
@@ -572,16 +614,16 @@ class ChatbotEngine:
         filters = extract_query_filters(question)
         class_name, school_year, semester = filters["class_name"], filters["school_year"], filters["semester"]
 
-        q_low = question.lower()
-        wants_self = any(k in q_low for k in ["của tôi", "của em", "của mình", "của con", "của cháu"])
-
         # Hoc ky HIEN TAI theo ngay thuc (co fallback ve ky gan nhat khi nghi he)
         cur = self.school_info.get_current_term(date.today().isoformat())
 
-        # "lich thi cua toi" (hoc sinh): tu suy ra lop + nam hoc tu ho so + ky hien tai
-        if wants_self and session_user is not None and getattr(session_user, "is_student", False):
+        # HOC SINH: mac dinh LUON xem lich thi CUA CHINH MINH trong ky hien tai,
+        # ke ca khi hoi chung chung (vd chi go "lich thi") — khong can noi "cua
+        # toi", va khong xem duoc lich thi lop khac. Tu suy ra lop tu ho so.
+        is_student = session_user is not None and getattr(session_user, "is_student", False)
+        if is_student and session_user.student_id is not None:
             year_name = school_year or (cur["year_name"] if cur else None)
-            if year_name and session_user.student_id is not None:
+            if year_name:
                 resolved_class = self.school_info.get_student_class(session_user.student_id, year_name)
                 if resolved_class:
                     class_name, school_year = resolved_class, year_name
@@ -656,8 +698,9 @@ class ChatbotEngine:
         semester = filters["semester"]
         target = "I" if semester == "I" else "II" if semester == "II" else "year"
 
+        # Xac dinh ma hoc sinh roi lay diem MOI NHAT truc tiep tu nguon (real-time)
         if forced_student_code:
-            recs = [r for r in self.store.records if r.student_id == forced_student_code]
+            codes = [forced_student_code]
             display_name = None
         else:
             if not name_query:
@@ -666,8 +709,9 @@ class ChatbotEngine:
             if not matched:
                 return _LookupResult(build_no_match_prompt(question, []))
             names = set(matched)
-            recs = [r for r in self.store.records if r.name in names]
+            codes = sorted({r.student_id for r in self.store.records if r.name in names and r.student_id})
             display_name = matched[0] if matched else None
+        recs = self.store.fetch_for_codes(codes)
         if not recs:
             return _LookupResult(build_no_match_prompt(question, []))
 
@@ -710,13 +754,19 @@ class ChatbotEngine:
                 notice_only=True,
             )
 
-        recs = [r for r in self.store.records if r.class_name.upper() == class_name.upper()]
+        # Danh sach ma hoc sinh cua lop (lay tu chi muc da nap — DS lop on dinh),
+        # sau do lay diem MOI NHAT truc tiep tu nguon (real-time).
+        cache_recs = [r for r in self.store.records if r.class_name.upper() == class_name.upper()]
         if school_year:
-            recs = [r for r in recs if r.school_year == school_year]
+            cache_recs = [r for r in cache_recs if r.school_year == school_year]
         else:
-            years = sorted({r.school_year for r in recs})
+            years = sorted({r.school_year for r in cache_recs})
             school_year = years[-1] if years else None
-            recs = [r for r in recs if r.school_year == school_year]
+            cache_recs = [r for r in cache_recs if r.school_year == school_year]
+        codes = sorted({r.student_id for r in cache_recs if r.student_id})
+
+        fresh = self.store.fetch_for_codes(codes)
+        recs = [r for r in fresh if not school_year or r.school_year == school_year]
 
         term_word = "Học kỳ I" if target == "I" else "Học kỳ II" if target == "II" else "cả năm"
         term_label = f"{term_word}" if school_year else None
