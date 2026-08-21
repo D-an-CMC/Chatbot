@@ -49,7 +49,6 @@ class SupabaseGradeStore(GradeStore):
         # de fetch_for_codes() chi phai query lai bang diem (real-time), khong
         # phai keo lai classes/enrollments moi lan.
         self._classes_by_id: Optional[Dict[int, str]] = None
-        self._enroll_by_student_year: Optional[Dict[tuple, str]] = None
         self._student_id_by_code: Optional[Dict[str, int]] = None
 
     def _get_client(self):
@@ -95,8 +94,7 @@ class SupabaseGradeStore(GradeStore):
         theo nam (suy ra class_name), va anh xa ma hoc sinh -> student_id (de loc
         bang diem theo cot truc tiep). Cache lai de fetch_for_codes() chi phai
         query lai bang diem (real-time)."""
-        if (self._classes_by_id is not None and self._enroll_by_student_year is not None
-                and self._student_id_by_code is not None):
+        if (self._classes_by_id is not None and self._student_id_by_code is not None):
             return
         client = self._get_client()
         self._classes_by_id = {
@@ -105,12 +103,6 @@ class SupabaseGradeStore(GradeStore):
                 lambda: client.table("classes").select("class_id, class_name")
             )
         }
-        self._enroll_by_student_year = {}
-        for e in self._fetch_all_pages(
-            lambda: client.table("student_enrollments").select("student_id, class_id, school_year_id")
-        ):
-            self._enroll_by_student_year[(e["student_id"], e["school_year_id"])] = \
-                self._classes_by_id.get(e["class_id"], "")
         self._student_id_by_code = {
             s["student_code"]: s["student_id"]
             for s in self._fetch_all_pages(
@@ -142,7 +134,7 @@ class SupabaseGradeStore(GradeStore):
         client = self._get_client()
         q = client.table("subject_results").select(
             "result_id, dtb_mhk, dtb_mcn, ranking, teacher_comment, student_id,"
-            "students(student_id, full_name, student_code, date_of_birth),"
+            "students(student_id, full_name, student_code, date_of_birth, class_id),"
             "semesters(semester_name, term_order, school_years(school_year_id, year_name)),"
             "subjects!inner(subject_name),"
             "grade_items(score, grade_types(type_code))"
@@ -177,7 +169,6 @@ class SupabaseGradeStore(GradeStore):
             return [r for r in self.records if r.student_id in codeset]
 
     def _rows_to_records(self, rows: list) -> List[GradeRecord]:
-        enroll_by_student_year = self._enroll_by_student_year or {}
         records: List[GradeRecord] = []
         for row in rows:
             student = row.get("students") or {}
@@ -185,12 +176,11 @@ class SupabaseGradeStore(GradeStore):
             year = sem.get("school_years") or {}
             subject_name = (row.get("subjects") or {}).get("subject_name") or self.subject_name or ""
 
-            school_year_id = year.get("school_year_id")
             school_year = year.get("year_name") or ""
             semester = "II" if sem.get("term_order") == 2 else "I"
-            student_id = student.get("student_id")
-
-            class_name = enroll_by_student_year.get((student_id, school_year_id), "")
+            
+            class_id = student.get("class_id")
+            class_name = self._classes_by_id.get(class_id, "") if self._classes_by_id and class_id else ""
 
             tx_scores: List[float] = []
             giua_ky: Optional[float] = None

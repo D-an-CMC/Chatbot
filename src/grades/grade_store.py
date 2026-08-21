@@ -54,7 +54,9 @@ class GradeRecord:
             f"Nam hoc: {self.school_year} | So diem hoc ky: {self.semester}"
         )
         if self.danh_gia:
-            lines.append(f"  Danh gia mon hoc (mon nhan xet): {self.danh_gia}")
+            # Mon nhan xet: dua ket qua Dat/Chua dat len lam noi dung chinh de
+            # LLM khong bo sot gia tri (chi mon nay moi co, mon tinh diem thi None).
+            lines.append(f"  Ket qua danh gia mon hoc: {self.danh_gia} (mon nay danh gia bang NHAN XET Dat/Chua dat, khong cham diem)")
         if self.tx_scores:
             lines.append(f"  Diem danh gia thuong xuyen: {', '.join(str(x) for x in self.tx_scores)}")
         if self.giua_ky is not None:

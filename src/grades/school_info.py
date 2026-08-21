@@ -57,23 +57,22 @@ class SchoolInfoStore:
             return []
 
         client = self._get_client()
-        enrollments = self._fetch_all_pages(
-            lambda: client.table("student_enrollments")
-            .select("roll_number, status, students(full_name, student_code, gender, date_of_birth)")
+        rows = self._fetch_all_pages(
+            lambda: client.table("students")
+            .select("full_name, student_code, gender, date_of_birth")
             .eq("class_id", class_id)
         )
 
         roster = []
-        for e in enrollments:
-            s = e.get("students") or {}
+        for s in rows:
             roster.append({
-                "roll_number": e.get("roll_number"),
+                "roll_number": None,
                 "full_name": s.get("full_name"),
                 "student_code": s.get("student_code"),
                 "gender": s.get("gender"),
-                "status": e.get("status"),
+                "status": None,
             })
-        roster.sort(key=lambda r: (r["roll_number"] is None, r["roll_number"] or 0, r["full_name"] or ""))
+        roster.sort(key=lambda r: (r["full_name"] or ""))
         return roster
 
     # -- hoc ky hien tai / lop cua hoc sinh --------------------------------
@@ -126,20 +125,23 @@ class SchoolInfoStore:
         return None
 
     def get_student_class(self, student_id: int, year_name: str) -> Optional[str]:
-        """Lop cua hoc sinh trong 1 nam hoc (tu bang student_enrollments)."""
         if student_id is None or not year_name:
             return None
         client = self._get_client()
-        resp = (
-            client.table("student_enrollments")
-            .select("classes(class_name), school_years!inner(year_name)")
+        
+        resp2 = (
+            client.table("students")
+            .select("classes(class_name, school_years(year_name))")
             .eq("student_id", student_id)
-            .eq("school_years.year_name", year_name)
             .execute()
         )
-        if not resp.data:
-            return None
-        return (resp.data[0].get("classes") or {}).get("class_name")
+        if resp2.data:
+            c = resp2.data[0].get("classes") or {}
+            cls = c.get("class_name")
+            cyear = (c.get("school_years") or {}).get("year_name")
+            if cls and cyear == year_name:
+                return cls
+        return None
 
     def pick_representative_week(self, class_name: str, school_year: str, today_iso: str) -> Optional[str]:
         """Chon 1 tuan dai dien cho lop: tuan co week_start GAN NHAT <= hom nay
@@ -251,20 +253,20 @@ class SchoolInfoStore:
     # -- ho so thong tin hoc sinh (cho giao vien / admin) ------------------
 
     def _latest_class(self, student_id: int):
-        """Lop hien tai cua hoc sinh = enrollment co nam hoc moi nhat."""
         client = self._get_client()
         resp = (
-            client.table("student_enrollments")
-            .select("roll_number, classes(class_name), school_years(year_name)")
+            client.table("students")
+            .select("classes(class_name, school_years(year_name))")
             .eq("student_id", student_id)
             .execute()
         )
         best = {"class_name": None, "year_name": None, "roll_number": None}
-        for e in resp.data or []:
-            yr = (e.get("school_years") or {}).get("year_name") or ""
-            cls = (e.get("classes") or {}).get("class_name")
-            if cls and (best["year_name"] is None or yr > best["year_name"]):
-                best = {"class_name": cls, "year_name": yr, "roll_number": e.get("roll_number")}
+        if resp.data:
+            c = resp.data[0].get("classes") or {}
+            yr = (c.get("school_years") or {}).get("year_name") or ""
+            cls = c.get("class_name")
+            if cls:
+                best = {"class_name": cls, "year_name": yr, "roll_number": None}
         return best
 
     def get_student_profiles(

@@ -491,6 +491,9 @@ class ChatbotEngine:
             and (not filters["semester"] or r.semester == filters["semester"])
             and (not subject or r.subject == subject)
         ]
+        # Sap xep theo (hoc sinh, mon, nam, hoc ky) de HK I luon lien truoc HK II
+        # cua cung mon -> LLM trinh bay dung, khong dao HK.
+        records.sort(key=lambda r: (r.name, r.subject, r.school_year, r.semester))
         return _limit_records(records), suggestions
 
     # -- danh sach lop / thoi khoa bieu -----------------------------------

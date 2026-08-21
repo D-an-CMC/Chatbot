@@ -61,7 +61,9 @@ def build_grade_prompt(question: str, records: List[GradeRecord]) -> str:
         f"DU LIEU DIEM SO:\n{context}\n\n"
         f"---\n"
         f"Cau hoi cua nguoi dung: {question}\n\n"
-        f"Hay tra loi dua CHI tren DU LIEU DIEM SO o tren."
+        f"Hay tra loi dua CHI tren DU LIEU DIEM SO o tren. Moi ban ghi da ghi ro "
+        f"'So diem hoc ky: I' hoac 'II' — hay giu DUNG hoc ky cua tung diem, "
+        f"TUYET DOI KHONG dao diem hoc ky I va hoc ky II cho nhau."
     )
 
 
