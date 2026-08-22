@@ -39,264 +39,113 @@ logging.basicConfig(level=LOG_LEVEL, format=LOG_FORMAT)
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Trich xuat bo loc (ten / lop / nam hoc / hoc ky) tu cau hoi tu do
-# ---------------------------------------------------------------------------
+import json
+import re
 
 _STUDENT_CODE_RE = re.compile(r"\bHS\d{3,}\b", re.IGNORECASE)
-_YEAR_RE = re.compile(r"\b(20\d{2})\s*[-–]\s*(20\d{2})\b")
-_CLASS_RE = re.compile(r"\blớp\s*([6-9])\s*([A-Ca-c])\b", re.IGNORECASE)
-_BARE_CLASS_RE = re.compile(r"\b([6-9])\s*([A-Ca-c])\b")
-_SEMESTER_RE = re.compile(r"(học\s*k[ỳì]|k[ỳì]|hk)\s*([I1]{1,2}|2)\b", re.IGNORECASE)
 
-_STOPWORD_PHRASES = [
-    "tất cả các môn", "tất cả các", "tất cả", "các môn", "mọi môn", "toàn bộ", "các",
-    "điểm số", "điểm của", "điểm trung bình", "điểm giữa kỳ", "điểm cuối kỳ",
-    "điểm cả năm", "điểm", "cho tôi biết", "cho em biết", "cho mình biết",
-    "làm ơn", "vui lòng", "học sinh", "bạn học", "bạn", "em ơi", "của em", "của bạn",
-    "của", "là bao nhiêu", "là gì", "như thế nào", "thế nào", "ra sao",
-    "môn khoa học tự nhiên", "khoa học tự nhiên", "môn vật lý", "vật lý", "môn",
-    "cả năm", "giữa kỳ", "cuối kỳ", "trung bình", "tổng kết",
-    "nhận xét", "tra cứu điểm", "tra cứu", "xem điểm", "xem", "hãy cho", "hãy",
-    "cho", "tôi", "mình", "hộ", "giúp", "với", "nhé",
-    # cum kich hoat tra cuu thong tin ho so hoc sinh (loai khoi phan tim ten)
-    "thông tin học sinh", "thông tin liên hệ", "thông tin", "hồ sơ học sinh", "hồ sơ",
-    "phụ huynh", "địa chỉ", "ngày sinh", "số điện thoại", "sđt", "liên hệ",
-    "mã học sinh", "mã hs", "giới tính",
-    # cum kich hoat tra cuu giao vien / tong ket (loai khoi phan tim ten)
-    "giáo viên chủ nhiệm", "giáo viên bộ môn", "giáo viên dạy", "giáo viên", "gvcn",
-    "chủ nhiệm", "dạy môn", "dạy lớp", "dạy", "thầy giáo", "cô giáo", "thầy", "cô", "ai",
-    "xếp loại", "học lực", "kết quả học tập", "tổng kết", "kết quả", "danh hiệu",
-    "lớp", "nào", "gì", "những", "thống kê", "top",
-]
-
-
-def _strip_stopwords(question: str) -> str:
-    # Loai bo cac cum gan voi so/ky hieu truoc (nam hoc, lop, hoc ky) de tranh
-    # con sot lai chu so/so La Ma le loi khi phan cum bi cat rieng le.
-    text = _YEAR_RE.sub(" ", question)
-    text = _CLASS_RE.sub(" ", text)
-    text = _BARE_CLASS_RE.sub(" ", text)
-    text = _SEMESTER_RE.sub(" ", text)
-    text = re.sub(r"\bnăm\s*học\b", " ", text, flags=re.IGNORECASE)
-    text = re.sub(r"\bnăm\b", " ", text, flags=re.IGNORECASE)
-
-    for phrase in _STOPWORD_PHRASES:
-        text = re.sub(r"\b" + re.escape(phrase) + r"\b", " ", text, flags=re.IGNORECASE)
-
-    text = re.sub(r"[?.,!:;]", " ", text)
-    return re.sub(r"\s+", " ", text).strip()
-
-
-# ---------------------------------------------------------------------------
-# Nhan dien MON HOC trong cau hoi
-# ---------------------------------------------------------------------------
-# Chia 2 nhom:
-#  - _SUBJECT_ANY: alias an toan (nhieu tu / viet tat dac thu) -> match bat ky dau.
-#  - _SUBJECT_AFTER_MARK: alias ngan de trung ten nguoi (toan, van, ly, hoa,
-#    su, dia, tin, nhac...) -> CHI nhan dien khi dung ngay sau "diem"/"mon",
-#    tranh hieu nham ten hoc sinh (vd "Nhat Anh", "Toan", "Van") thanh mon.
-
-_SUBJECT_ANY = {
-    "khoa hoc tu nhien": "Khoa học tự nhiên",
-    "khtn": "Khoa học tự nhiên",
-    "vat ly": "Khoa học tự nhiên",
-    "hoa hoc": "Khoa học tự nhiên",
-    "sinh hoc": "Khoa học tự nhiên",
-    "ngu van": "Ngữ Văn",
-    "tieng anh": "Tiếng Anh",
-    "anh van": "Tiếng Anh",
-    "lich su": "Lịch sử",
-    "dia ly": "Địa Lý",
-    "tin hoc": "Tin học",
-    "cong nghe": "Công nghệ",
-    "the duc": "Thể dục",
-    "am nhac": "Âm nhạc",
-    "my thuat": "Mỹ thuật",
-    "giao duc cong dan": "Giáo dục công dân",
-    "gdcd": "Giáo dục công dân",
-    "chao co": "Chào cờ",
-    "sinh hoat lop": "Sinh hoạt lớp",
-    "hoat dong trai nghiem huong nghiep": "Hoạt động trải nghiệm hướng nghiệp",
-    "hoat dong trai nghiem": "Hoạt động trải nghiệm hướng nghiệp",
-    "trai nghiem huong nghiep": "Hoạt động trải nghiệm hướng nghiệp",
-    "noi dung giao duc dia phuong": "Nội dung giáo dục địa phương",
-    "giao duc dia phuong": "Nội dung giáo dục địa phương",
-}
-_SUBJECT_AFTER_MARK = {
-    "toan": "Toán",
-    "van": "Ngữ Văn",
-    "anh": "Tiếng Anh",
-    "su": "Lịch sử",
-    "dia": "Địa Lý",
-    "tin": "Tin học",
-    "nhac": "Âm nhạc",
-    "ly": "Khoa học tự nhiên",
-    "hoa": "Khoa học tự nhiên",
-    "sinh": "Khoa học tự nhiên",
-}
-_SUBJECT_MARKS = {"diem", "mon", "day"}  # "day" = "dạy" (vd: ai dạy Toán)
-
-
-def _contains_phrase(tokens: List[str], phrase: str) -> bool:
-    parts = phrase.split()
-    n = len(parts)
-    for i in range(len(tokens) - n + 1):
-        if tokens[i:i + n] == parts:
-            return True
-    return False
-
-
-def detect_subject(question: str, known_subjects: Optional[Set[str]] = None):
-    """Nhan dien ten mon trong cau hoi.
-
-    Tra ve (subject_name | None, alias_da_match | None). alias tra ve de loai
-    khoi phan tim ten hoc sinh. known_subjects (neu co) gioi han chi nhan dien
-    cac mon that su ton tai trong du lieu."""
-    nq = normalize_name(question)
-    tokens = nq.split()
-
-    def _ok(subj):
-        return known_subjects is None or subj in known_subjects
-
-    # 1) alias an toan — uu tien cum dai truoc de tranh khop mot phan
-    for alias in sorted(_SUBJECT_ANY, key=lambda a: -len(a)):
-        if _contains_phrase(tokens, alias) and _ok(_SUBJECT_ANY[alias]):
-            return _SUBJECT_ANY[alias], alias
-
-    # 2) alias ngan — chi khi dung ngay sau "diem"/"mon"
-    for i, tok in enumerate(tokens):
-        if tok in _SUBJECT_MARKS and i + 1 < len(tokens):
-            nxt = tokens[i + 1]
-            if nxt in _SUBJECT_AFTER_MARK and _ok(_SUBJECT_AFTER_MARK[nxt]):
-                return _SUBJECT_AFTER_MARK[nxt], nxt
-    return None, None
-
-
-def _strip_alias_tokens(name_query: str, alias: str) -> str:
-    """Loai cac tu thuoc alias mon khoi chuoi tim ten (lam viec tren dang
-    khong dau — find_matching_names se tu chuan hoa lai nen khong anh huong)."""
-    alias_toks = set(alias.split())
-    kept = [t for t in normalize_name(name_query).split() if t not in alias_toks]
-    return " ".join(kept).strip()
-
-
-def extract_query_filters(question: str, known_subjects: Optional[Set[str]] = None) -> dict:
-    filters: dict = {"school_year": None, "semester": None, "class_name": None, "subject": None}
-
-    year_match = _YEAR_RE.search(question)
-    if year_match:
-        filters["school_year"] = f"{year_match.group(1)}-{year_match.group(2)}"
-
-    class_match = _CLASS_RE.search(question) or _BARE_CLASS_RE.search(question)
-    if class_match:
-        filters["class_name"] = f"{class_match.group(1)}{class_match.group(2)}".upper()
-
-    sem_match = _SEMESTER_RE.search(question)
-    if sem_match:
-        g = sem_match.group(2).lower()
-        filters["semester"] = "II" if g in ("ii", "2") else "I"
-
-    subject, alias = detect_subject(question, known_subjects)
-    filters["subject"] = subject
-
-    name = _strip_stopwords(question)
-    if alias:
-        name = _strip_alias_tokens(name, alias)
-    filters["name_query"] = name
-    return filters
-
-
-# ---------------------------------------------------------------------------
-# Phan loai y dinh cua cau hoi
-# ---------------------------------------------------------------------------
-
-_TIMETABLE_KEYWORDS = [
-    "thời khóa biểu", "tkb", "lịch học", "lịch dạy", "học vào thứ", "tiết mấy", "lịch dạy học",
-]
-_EXAM_KEYWORDS = [
-    "lịch thi", "lịch kiểm tra", "thi cuối kỳ", "thi giữa kỳ", "ngày thi", "thi khi nào",
-    "thi môn gì", "thi những môn", "thi hôm nào", "khi nào thi", "bao giờ thi",
-    "sắp thi", "sắp tới thi", "có thi không", "lịch thi cử",
-]
-_ATTENDANCE_KEYWORDS = [
-    "điểm danh", "vắng học", "nghỉ học", "đi học đầy đủ", "có mặt",
-    "vắng mấy buổi", "nghỉ mấy buổi", "nghỉ buổi", "vắng buổi",
-    "nghỉ những buổi", "vắng những buổi", "buổi học nào", "nghỉ hôm nào",
-    "vắng hôm nào", "nghỉ ngày nào", "vắng ngày nào", "đã nghỉ", "đi muộn", "đi trễ",
-]
-_NOTIFICATION_KEYWORDS = [
-    "thông báo",
-]
-_ACTIVITY_KEYWORDS = [
-    "hoạt động ngoại khóa", "hoạt động ngoài giờ", "sự kiện", "sinh hoạt tập thể", "hoạt động",
-]
-_ROSTER_KEYWORDS = [
-    "danh sách lớp", "danh sách học sinh", "sĩ số", "những học sinh nào",
-    "có bao nhiêu học sinh", "lớp có ai", "ai trong lớp", "các bạn trong lớp",
-]
-_STUDENT_INFO_KEYWORDS = [
-    "thông tin học sinh", "thông tin của học sinh", "hồ sơ học sinh", "hồ sơ của",
-    "thông tin liên hệ", "thông tin về", "thông tin của em", "thông tin em",
-    "tra cứu học sinh", "tra cứu thông tin", "phụ huynh của", "phụ huynh em",
-    "địa chỉ của", "ngày sinh của", "sđt phụ huynh", "số điện thoại phụ huynh",
-    "mã học sinh của",
-]
-_TEACHER_KEYWORDS = [
-    "giáo viên", "gvcn", "chủ nhiệm", "ai dạy", "ai là giáo viên", "dạy môn",
-    "dạy lớp", "dạy những", "giáo viên bộ môn", "giáo viên dạy", "cô nào", "thầy nào",
-    "dạy", "cô ", "thầy ",  # "cô "/"thầy " co dau cach nen khong trung "công"/...
-]
-# Thong ke lop (giao vien/admin) — cac cum gan voi "lop" hoac xep hang.
-_CLASS_STATS_KEYWORDS = [
-    "trung bình lớp", "tb lớp", "điểm trung bình lớp", "top", "cao nhất lớp",
-    "thấp nhất lớp", "giỏi nhất lớp", "kém nhất lớp", "dưới trung bình",
-    "trên trung bình", "xếp hạng", "hạng nhất", "thống kê lớp", "thống kê", "phổ điểm",
-    "bao nhiêu học sinh giỏi", "số học sinh giỏi", "bao nhiêu em đạt",
-]
-# Tong ket / xep loai ca nhan (khong dung "tong ket" tran de tranh nham "tong ket mon X")
-_SUMMARY_KEYWORDS = [
-    "xếp loại", "học lực", "kết quả học tập", "tổng kết học kỳ", "tổng kết cả năm",
-    "tổng kết năm", "kết quả học kỳ", "kết quả cả năm", "danh hiệu", "được học sinh giỏi",
-    "lên lớp",
-]
-# Cac cum bao hieu nguoi dung muon xem diem CUA TAT CA CAC NAM HOC (khong gioi
-# han nam hien tai). Vd: "toan bo diem qua cac nam", "tat ca cac nam".
+# Cac cum bao hieu nguoi dung muon xem diem CUA TAT CA CAC NAM HOC (khong gioi han nam hien tai).
 _ALL_YEARS_KEYWORDS = [
     "qua các năm", "qua từng năm", "tất cả các năm", "toàn bộ các năm", "tất cả năm học",
     "mọi năm", "các năm học", "hết các năm", "qua các năm học", "toàn bộ điểm qua",
     "từ trước đến nay", "từ trước tới nay", "lịch sử điểm",
 ]
 
-
 def wants_all_years(question: str) -> bool:
     q = question.lower()
     return any(k in q for k in _ALL_YEARS_KEYWORDS)
 
+def analyze_query_llm(question: str, history: Optional[List[dict]] = None) -> dict:
+    """Su dung LLM de phan loai y dinh va trich xuat filter cung 1 luc."""
+    from src.llm.llm_chain import get_llm
+    from langchain_core.messages import SystemMessage, HumanMessage
+    
+    context_str = ""
+    if history:
+        recent = [h["content"] for h in history[-4:] if h["role"] == "user"]
+        if recent:
+            context_str = "\nCác câu hỏi trước đó: " + " | ".join(recent)
+            
+    prompt = f"""Bạn là một chuyên gia phân tích ngữ nghĩa. Nhiệm vụ của bạn là phân tích câu hỏi của người dùng và trả về MỘT chuỗi JSON duy nhất chứa ý định và các thông tin cần thiết.
+    
+CHỈ TRẢ VỀ JSON HỢP LỆ, KHÔNG BAO GỒM BẤT KỲ VĂN BẢN NÀO KHÁC (KHÔNG DÙNG ```json ... ``` MARKDOWN).
 
-def classify_intent(question: str) -> str:
-    q = question.lower()
-    if any(k in q for k in _TIMETABLE_KEYWORDS):
-        return "timetable"
-    if any(k in q for k in _EXAM_KEYWORDS):
-        return "exam"
-    if any(k in q for k in _ATTENDANCE_KEYWORDS):
-        return "attendance"
-    if any(k in q for k in _NOTIFICATION_KEYWORDS):
-        return "notification"
-    if any(k in q for k in _ACTIVITY_KEYWORDS):
-        return "activity"
-    if any(k in q for k in _TEACHER_KEYWORDS):
-        return "teacher"
-    if any(k in q for k in _CLASS_STATS_KEYWORDS):
-        return "class_stats"
-    if any(k in q for k in _SUMMARY_KEYWORDS):
-        return "summary"
-    if any(k in q for k in _STUDENT_INFO_KEYWORDS):
-        return "student_info"
-    if any(k in q for k in _ROSTER_KEYWORDS):
-        return "roster"
-    return "grade"
+Ý định (intent) phải là MỘT TRONG CÁC TỪ KHÓA sau:
+- timetable: Hỏi về thời khóa biểu, lịch học, lịch học thêm.
+- exam: Hỏi về lịch thi, lịch kiểm tra.
+- attendance: Hỏi về điểm danh, đi học hay vắng học, nghỉ học.
+- notification: Hỏi về thông báo.
+- activity: Hỏi về hoạt động ngoại khóa, sự kiện.
+- teacher: Hỏi về giáo viên (chủ nhiệm, bộ môn, ai dạy).
+- class_stats: Thống kê điểm của lớp, xếp hạng của cả lớp.
+- summary: Tổng kết, xếp loại học lực của cá nhân, kết quả học tập.
+- student_info: Thông tin hồ sơ cá nhân, phụ huynh, liên hệ.
+- roster: Danh sách lớp, sĩ số, các bạn trong lớp.
+- grade: Tra cứu điểm số môn học (MẶC ĐỊNH nếu không khớp các loại trên).
+
+Định dạng JSON yêu cầu:
+{{
+  "intent": "từ_khóa_intent",
+  "filters": {{
+    "student_name": "Tên học sinh nếu có (ví dụ: Nguyễn Văn An), hoặc mã HS nếu có",
+    "class_name": "Tên lớp nếu có (ví dụ: 6A, 7B). Viết hoa chữ cái.",
+    "school_year": "Năm học nếu có (ví dụ: 2023-2024, 2024-2025).",
+    "semester": "Học kỳ nếu có, CHỈ GHI 'I' hoặc 'II'.",
+    "subject": "Tên môn học nếu có (ví dụ: Toán, Ngữ Văn, Tiếng Anh, Khoa học tự nhiên, v.v.)"
+  }}
+}}
+Nếu không tìm thấy thông tin cho một filter nào đó, hãy để giá trị là null.
+Đối với môn học, cố gắng chuyển tên môn viết tắt hoặc không dấu (vd: khtn, ly, gdcd) về tên chuẩn (Khoa học tự nhiên, Giáo dục công dân...).
+Tên học sinh: Hãy loại bỏ các đại từ xưng hô, chỉ lấy tên riêng.
+
+{context_str}
+Câu hỏi hiện tại: {question}"""
+
+    try:
+        llm = get_llm(DEFAULT_LLM_PROVIDER)
+        response = llm.invoke([
+            SystemMessage(content="You are a JSON data extractor."),
+            HumanMessage(content=prompt)
+        ])
+        content = response.content
+        if isinstance(content, list):
+            content = " ".join([str(c.get("text", "")) if isinstance(c, dict) else str(c) for c in content])
+        
+        content = str(content).strip()
+        if content.startswith("```json"):
+            content = content[7:]
+        elif content.startswith("```"):
+            content = content[3:]
+        if content.endswith("```"):
+            content = content[:-3]
+        content = content.strip()
+        
+        data = json.loads(content)
+        
+        if "filters" not in data:
+            data["filters"] = {}
+        filters = data["filters"]
+        
+        # Normalize subject (optional) - the LLM usually gets it right
+        # Provide default filter keys expected by functions
+        return {
+            "intent": data.get("intent", "grade"),
+            "filters": {
+                "name_query": filters.get("student_name"),
+                "class_name": filters.get("class_name"),
+                "school_year": filters.get("school_year"),
+                "semester": filters.get("semester"),
+                "subject": filters.get("subject")
+            }
+        }
+    except Exception as e:
+        logger.error(f"Lỗi khi dùng LLM analyze_query: {e}")
+        return {
+            "intent": "grade",
+            "filters": {"name_query": None, "class_name": None, "school_year": None, "semester": None, "subject": None}
+        }
+
+
 
 
 @dataclass
@@ -421,14 +270,13 @@ class ChatbotEngine:
     # -- tra cuu diem (mac dinh) ------------------------------------------
 
     def _current_school_year(self) -> Optional[str]:
-        """Nam hoc HIEN TAI theo ngay thuc (tu Supabase, co fallback ve nam gan
-        nhat khi nghi he). Neu khong co school_info (che do Excel) thi lay nam
-        moi nhat co trong du lieu diem."""
+        """Nam hoc HIEN TAI tu Supabase (is_current=TRUE).
+        Neu khong co (che do Excel) thi lay nam moi nhat co trong du lieu diem."""
         if self.school_info is not None:
             try:
-                cur = self.school_info.get_current_term(date.today().isoformat())
-                if cur and cur.get("year_name"):
-                    return cur["year_name"]
+                ans = self.school_info.get_current_school_year()
+                if ans:
+                    return ans
             except Exception as e:
                 logger.warning("Khong lay duoc nam hoc hien tai: %s", e)
         years = self.store.list_school_years()
@@ -446,7 +294,7 @@ class ChatbotEngine:
         return self._current_school_year()
 
     def _resolve_records(
-        self, question: str, forced_student_code: Optional[str] = None,
+        self, question: str, filters: dict, forced_student_code: Optional[str] = None,
     ) -> Tuple[List[GradeRecord], List[str]]:
         """Tra ve (danh sach ban ghi khop, danh sach ten goi y neu khong khop).
 
@@ -454,12 +302,10 @@ class ChatbotEngine:
         hoan toan viec tim ten trong cau hoi va CHI loc theo ma hoc sinh nay —
         ngan hoc sinh xem duoc diem cua nguoi khac bang cach go ten khac.
 
-        Neu cau hoi co ten mon cu the -> chi tra diem mon do; neu hoi chung
+        Neu cau hoi co ten mon cu cu the -> chi tra diem mon do; neu hoi chung
         chung -> tra diem TAT CA cac mon."""
-        known_subjects = set(self.store.list_subjects())
-        filters = extract_query_filters(question, known_subjects)
-        name_query = filters.pop("name_query")
-        subject = filters["subject"]
+        name_query = filters.get("name_query")
+        subject = filters.get("subject")
 
         # Nam hoc: mac dinh nam hien tai; neu neu ro nam -> nam do; neu hoi
         # "qua cac nam" -> tat ca (None).
@@ -498,9 +344,8 @@ class ChatbotEngine:
 
     # -- danh sach lop / thoi khoa bieu -----------------------------------
 
-    def _resolve_roster(self, question: str) -> _LookupResult:
-        filters = extract_query_filters(question)
-        class_name, school_year = filters["class_name"], filters["school_year"]
+    def _resolve_roster(self, question: str, filters: dict) -> _LookupResult:
+        class_name, school_year = filters.get("class_name"), filters.get("school_year")
 
         if self.school_info is None:
             return _LookupResult(build_feature_unavailable_prompt(question, "danh sách lớp"))
@@ -518,12 +363,11 @@ class ChatbotEngine:
         citations = [f"Danh sách lớp {class_name} - Năm học {school_year}"] if roster else []
         return _LookupResult(prompt, citations, bool(roster))
 
-    def _resolve_timetable(self, question: str, session_user=None) -> _LookupResult:
+    def _resolve_timetable(self, question: str, filters: dict, session_user=None) -> _LookupResult:
         if self.school_info is None:
             return _LookupResult(build_feature_unavailable_prompt(question, "thời khóa biểu"))
 
-        filters = extract_query_filters(question)
-        class_name, school_year, semester = filters["class_name"], filters["school_year"], filters["semester"]
+        class_name, school_year, semester = filters.get("class_name"), filters.get("school_year"), filters.get("semester")
 
         q_low = question.lower()
         wants_self = any(k in q_low for k in ["của tôi", "của em", "của mình", "của con", "của cháu"])
@@ -580,7 +424,7 @@ class ChatbotEngine:
         return _LookupResult(prompt, citations, bool(rows))
 
     def _resolve_attendance(
-        self, question: str, forced_student_id: Optional[int] = None, forced_full_name: Optional[str] = None,
+        self, question: str, filters: dict, forced_student_id: Optional[int] = None, forced_full_name: Optional[str] = None,
     ) -> _LookupResult:
         if self.school_info is None:
             return _LookupResult(build_feature_unavailable_prompt(question, "điểm danh"))
@@ -589,8 +433,7 @@ class ChatbotEngine:
             student_ids = [forced_student_id]
             display_name = forced_full_name or ""
         else:
-            filters = extract_query_filters(question)
-            name_query = filters["name_query"]
+            name_query = filters.get("name_query")
             if not name_query:
                 return _LookupResult(build_no_attendance_match_prompt(question, []))
 
@@ -610,12 +453,11 @@ class ChatbotEngine:
         citations = [f"Điểm danh của {display_name}"] if records else []
         return _LookupResult(prompt, citations, bool(records))
 
-    def _resolve_exam_schedule(self, question: str, session_user=None) -> _LookupResult:
+    def _resolve_exam_schedule(self, question: str, filters: dict, session_user=None) -> _LookupResult:
         if self.school_info is None:
             return _LookupResult(build_feature_unavailable_prompt(question, "lịch thi"))
 
-        filters = extract_query_filters(question)
-        class_name, school_year, semester = filters["class_name"], filters["school_year"], filters["semester"]
+        class_name, school_year, semester = filters.get("class_name"), filters.get("school_year"), filters.get("semester")
 
         # Hoc ky HIEN TAI theo ngay thuc (co fallback ve ky gan nhat khi nghi he)
         cur = self.school_info.get_current_term(date.today().isoformat())
@@ -667,7 +509,7 @@ class ChatbotEngine:
         citations = [cite] if rows else []
         return _LookupResult(prompt, citations, bool(rows))
 
-    def _resolve_student_info(self, question: str) -> _LookupResult:
+    def _resolve_student_info(self, question: str, filters: dict) -> _LookupResult:
         if self.school_info is None:
             return _LookupResult(build_feature_unavailable_prompt(question, "thông tin học sinh"))
 
@@ -678,8 +520,7 @@ class ChatbotEngine:
             citations = [f"Thông tin học sinh {p.get('student_code')}" for p in profiles]
             return _LookupResult(build_student_info_prompt(question, profiles), citations, bool(profiles))
 
-        filters = extract_query_filters(question)
-        name_query = filters["name_query"]
+        name_query = filters.get("name_query")
         if not name_query:
             return _LookupResult(build_student_info_prompt(question, []))
 
@@ -693,12 +534,10 @@ class ChatbotEngine:
 
     # -- tong ket / xep loai (Thong tu 22) --------------------------------
 
-    def _resolve_summary(self, question: str, forced_student_code: Optional[str] = None) -> _LookupResult:
-        known_subjects = set(self.store.list_subjects())
-        filters = extract_query_filters(question, known_subjects)
-        name_query = filters.pop("name_query")
-        school_year = filters["school_year"]
-        semester = filters["semester"]
+    def _resolve_summary(self, question: str, filters: dict, forced_student_code: Optional[str] = None) -> _LookupResult:
+        name_query = filters.get("name_query")
+        school_year = filters.get("school_year")
+        semester = filters.get("semester")
         target = "I" if semester == "I" else "II" if semester == "II" else "year"
 
         # Xac dinh ma hoc sinh roi lay diem MOI NHAT truc tiep tu nguon (real-time)
@@ -740,13 +579,11 @@ class ChatbotEngine:
 
     # -- thong ke lop (giao vien / admin) ---------------------------------
 
-    def _resolve_class_stats(self, question: str) -> _LookupResult:
-        known_subjects = set(self.store.list_subjects())
-        filters = extract_query_filters(question, known_subjects)
-        class_name = filters["class_name"]
-        school_year = filters["school_year"]
-        semester = filters["semester"]
-        subject = filters["subject"]
+    def _resolve_class_stats(self, question: str, filters: dict) -> _LookupResult:
+        class_name = filters.get("class_name")
+        school_year = filters.get("school_year")
+        semester = filters.get("semester")
+        subject = filters.get("subject")
         target = "I" if semester == "I" else "II" if semester == "II" else "year"
 
         if not class_name:
@@ -785,16 +622,14 @@ class ChatbotEngine:
 
     # -- tra cuu giao vien ------------------------------------------------
 
-    def _resolve_teacher(self, question: str, include_contact: bool = True) -> _LookupResult:
+    def _resolve_teacher(self, question: str, filters: dict, include_contact: bool = True) -> _LookupResult:
         if self.school_info is None:
             return _LookupResult(build_feature_unavailable_prompt(question, "tra cứu giáo viên"))
 
-        known_subjects = set(self.store.list_subjects())
-        filters = extract_query_filters(question, known_subjects)
-        class_name = filters["class_name"]
-        school_year = filters["school_year"]
-        subject = filters["subject"]
-        name_query = filters["name_query"]
+        class_name = filters.get("class_name")
+        school_year = filters.get("school_year")
+        subject = filters.get("subject")
+        name_query = filters.get("name_query")
         q_low = question.lower()
         wants_homeroom = any(k in q_low for k in ["chủ nhiệm", "gvcn"])
 
@@ -870,12 +705,11 @@ class ChatbotEngine:
         citations = ["Thông báo nhà trường (gần đây nhất)"] if notifications else []
         return _LookupResult(prompt, citations, bool(notifications))
 
-    def _resolve_activities(self, question: str) -> _LookupResult:
+    def _resolve_activities(self, question: str, filters: dict) -> _LookupResult:
         if self.school_info is None:
             return _LookupResult(build_feature_unavailable_prompt(question, "hoạt động ngoại khóa"))
 
-        filters = extract_query_filters(question)
-        school_year, semester = filters["school_year"], filters["semester"]
+        school_year, semester = filters.get("school_year"), filters.get("semester")
 
         activities = self.school_info.get_activities(school_year, semester)
         prompt = build_activities_prompt(question, activities)
@@ -890,7 +724,16 @@ class ChatbotEngine:
     # -- phan quyen theo vai tro dang nhap ----------------------------------
 
     def _build_lookup(self, question: str, session_user=None) -> _LookupResult:
-        intent = classify_intent(question)
+        session_id = self._session_id_for(session_user)
+        history = self.memory.get_chat_history(session_id)
+        
+        analysis = analyze_query_llm(question, history)
+        intent = analysis["intent"]
+        filters = analysis["filters"]
+
+        # Gan mac dinh nam hoc hien tai neu khong cung cap va khong phai "tat ca cac nam"
+        if not filters.get("school_year") and not wants_all_years(question):
+            filters["school_year"] = self._current_school_year()
 
         if session_user is not None and session_user.is_student:
             # Hoc sinh: chi duoc xem diem/diem danh CUA CHINH MINH, khong duoc
@@ -903,15 +746,16 @@ class ChatbotEngine:
             if intent == "class_stats":
                 return _LookupResult(build_permission_denied_prompt(question, "thống kê điểm cả lớp"), notice_only=True)
             if intent == "summary":
-                return self._resolve_summary(question, forced_student_code=session_user.student_code)
+                return self._resolve_summary(question, filters, forced_student_code=session_user.student_code)
             if intent == "grade":
-                records, _ = self._resolve_records(question, forced_student_code=session_user.student_code)
+                records, _ = self._resolve_records(question, filters, forced_student_code=session_user.student_code)
                 if not records:
                     return _LookupResult(build_no_match_prompt(question, []))
                 return _LookupResult(build_grade_prompt(question, records), grade_citation_lines(records), True)
             if intent == "attendance":
                 return self._resolve_attendance(
                     question,
+                    filters,
                     forced_student_id=session_user.student_id,
                     forced_full_name=session_user.full_name,
                 )
@@ -919,28 +763,28 @@ class ChatbotEngine:
             # cho hoc sinh (thong tin chung cua lop/truong, khong nhay cam).
 
         if intent == "roster":
-            return self._resolve_roster(question)
+            return self._resolve_roster(question, filters)
         if intent == "student_info":
-            return self._resolve_student_info(question)
+            return self._resolve_student_info(question, filters)
         if intent == "teacher":
             include_contact = not (session_user is not None and getattr(session_user, "is_student", False))
-            return self._resolve_teacher(question, include_contact=include_contact)
+            return self._resolve_teacher(question, filters, include_contact=include_contact)
         if intent == "class_stats":
-            return self._resolve_class_stats(question)
+            return self._resolve_class_stats(question, filters)
         if intent == "summary":
-            return self._resolve_summary(question)
+            return self._resolve_summary(question, filters)
         if intent == "timetable":
-            return self._resolve_timetable(question, session_user)
+            return self._resolve_timetable(question, filters, session_user)
         if intent == "exam":
-            return self._resolve_exam_schedule(question, session_user)
+            return self._resolve_exam_schedule(question, filters, session_user)
         if intent == "attendance":
-            return self._resolve_attendance(question)
+            return self._resolve_attendance(question, filters)
         if intent == "notification":
             return self._resolve_notifications(question)
         if intent == "activity":
-            return self._resolve_activities(question)
+            return self._resolve_activities(question, filters)
 
-        records, suggestions = self._resolve_records(question)
+        records, suggestions = self._resolve_records(question, filters)
         if not records:
             return _LookupResult(build_no_match_prompt(question, suggestions))
         return _LookupResult(build_grade_prompt(question, records), grade_citation_lines(records), True)

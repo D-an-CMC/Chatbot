@@ -77,6 +77,19 @@ class SchoolInfoStore:
 
     # -- hoc ky hien tai / lop cua hoc sinh --------------------------------
 
+    def get_current_school_year(self) -> Optional[str]:
+        """Lay nam hoc dang duoc danh dau la is_current=TRUE trong bang school_years."""
+        client = self._get_client()
+        resp = (
+            client.table("school_years")
+            .select("year_name")
+            .eq("is_current", True)
+            .execute()
+        )
+        if resp.data:
+            return resp.data[0]["year_name"]
+        return None
+
     def get_current_term(self, today_iso: str) -> Optional[Dict]:
         """Xac dinh hoc ky "hien tai" theo NGAY THUC.
 
