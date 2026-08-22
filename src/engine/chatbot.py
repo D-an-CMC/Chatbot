@@ -369,23 +369,16 @@ class ChatbotEngine:
 
         class_name, school_year, semester = filters.get("class_name"), filters.get("school_year"), filters.get("semester")
 
-        q_low = question.lower()
-        wants_self = any(k in q_low for k in ["của tôi", "của em", "của mình", "của con", "của cháu"])
-
-        # Xac dinh hoc ky HIEN TAI theo ngay thuc (real-time)
-        cur = self.school_info.get_current_term(date.today().isoformat())
-
-        # "cua toi" cho hoc sinh: tu suy ra lop + nam hoc tu ho so + ky hien tai
-        if wants_self and session_user is not None and getattr(session_user, "is_student", False):
+        # HOC SINH: mac dinh LUON xem TKB CUA CHINH MINH trong ky hien tai,
+        # ke ca khi hoi chung chung (vd chi go "tkb") — khong can noi "cua toi".
+        is_student = session_user is not None and getattr(session_user, "is_student", False)
+        if is_student and session_user.student_id is not None:
+            cur = self.school_info.get_current_term(date.today().isoformat())
             year_name = school_year or (cur["year_name"] if cur else None)
-            if not year_name:
-                return _LookupResult(build_timetable_prompt(
-                    question, "(của bạn)", "(chưa xác định)", None, []))
-            resolved_class = self.school_info.get_student_class(session_user.student_id, year_name)
-            if not resolved_class:
-                return _LookupResult(build_timetable_prompt(
-                    question, "(của bạn)", year_name, None, []))
-            class_name, school_year = resolved_class, year_name
+            if year_name:
+                resolved_class = self.school_info.get_student_class(session_user.student_id, year_name)
+                if resolved_class:
+                    class_name, school_year = resolved_class, year_name
 
         missing = []
         if not class_name:
