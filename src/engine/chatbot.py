@@ -615,7 +615,7 @@ class ChatbotEngine:
 
     # -- tra cuu giao vien ------------------------------------------------
 
-    def _resolve_teacher(self, question: str, filters: dict, include_contact: bool = True) -> _LookupResult:
+    def _resolve_teacher(self, question: str, filters: dict, include_contact: bool = True, session_user=None) -> _LookupResult:
         if self.school_info is None:
             return _LookupResult(build_feature_unavailable_prompt(question, "tra cứu giáo viên"))
 
@@ -625,6 +625,17 @@ class ChatbotEngine:
         name_query = filters.get("name_query")
         q_low = question.lower()
         wants_homeroom = any(k in q_low for k in ["chủ nhiệm", "gvcn"])
+
+        # HOC SINH: mac dinh LUON tra cuu giao vien (chu nhiem/bo mon) cua LOP MINH,
+        # neu khong neu ro ten lop.
+        is_student = session_user is not None and getattr(session_user, "is_student", False)
+        if is_student and session_user.student_id is not None:
+            cur = self.school_info.get_current_term(date.today().isoformat())
+            year_name = school_year or (cur["year_name"] if cur else None)
+            if year_name:
+                resolved_class = self.school_info.get_student_class(session_user.student_id, year_name)
+                if resolved_class:
+                    class_name, school_year = resolved_class, year_name
 
         if not school_year:
             years = self.store.list_school_years()
@@ -761,7 +772,7 @@ class ChatbotEngine:
             return self._resolve_student_info(question, filters)
         if intent == "teacher":
             include_contact = not (session_user is not None and getattr(session_user, "is_student", False))
-            return self._resolve_teacher(question, filters, include_contact=include_contact)
+            return self._resolve_teacher(question, filters, include_contact=include_contact, session_user=session_user)
         if intent == "class_stats":
             return self._resolve_class_stats(question, filters)
         if intent == "summary":
