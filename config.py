@@ -53,7 +53,7 @@ for _dir in [DATA_DIR, GRADES_DIR, MEMORY_DIR]:
 GEMINI_API_KEY = _env_str("GEMINI_API_KEY", "")
 GEMINI_MODEL = _env_str("GEMINI_MODEL", "gemini-2.5-flash")
 GEMINI_TEMPERATURE = _env_float("GEMINI_TEMPERATURE", 0.1)
-GEMINI_MAX_TOKENS = _env_int("GEMINI_MAX_TOKENS", 2048)
+GEMINI_MAX_TOKENS = _env_int("GEMINI_MAX_TOKENS", 8192)
 
 # ---------------------------------------------------------------------------
 # OpenRouter / LLM
@@ -64,7 +64,7 @@ OPENROUTER_BASE_URL = _env_str("OPENROUTER_BASE_URL", "https://openrouter.ai/api
 
 LLM_MODEL = _env_str("LLM_MODEL", "nvidia/llama-3.1-nemotron-70b-instruct")
 LLM_TEMPERATURE = _env_float("LLM_TEMPERATURE", 0.1)
-LLM_MAX_TOKENS = _env_int("LLM_MAX_TOKENS", 1024)
+LLM_MAX_TOKENS = _env_int("LLM_MAX_TOKENS", 8192)
 
 # Provider mac dinh dung cho chat (openrouter | groq | gemini | ...)
 DEFAULT_LLM_PROVIDER = _env_str("DEFAULT_LLM_PROVIDER", "gemini")
@@ -130,8 +130,21 @@ APP_DESCRIPTION = _env_str(
 )
 
 # ---------------------------------------------------------------------------
+# FastAPI (api.py)
+# ---------------------------------------------------------------------------
+
+API_HOST = _env_str("API_HOST", "0.0.0.0")
+API_PORT = _env_int("API_PORT", 8000)
+API_CORS_ORIGINS = [
+    o.strip()
+    for o in _env_str("API_CORS_ORIGINS", "*").split(",")
+    if o.strip()
+]
+
+# ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
 
 LOG_LEVEL = getattr(logging, _env_str("LOG_LEVEL", "INFO").upper(), logging.INFO)
 LOG_FORMAT = _env_str("LOG_FORMAT", "%(asctime)s | %(levelname)s | %(name)s | %(message)s")
+

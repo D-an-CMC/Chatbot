@@ -25,9 +25,13 @@ Quy tac bat buoc:
 - TUYET DOI KHONG bia dat, suy doan hay them thong tin khong co trong du lieu duoc cung cap.
 - Neu du lieu co nhieu ban ghi (nhieu mon / nam hoc / hoc ky / lop) khop voi cau hoi, hay trinh
   bay ro tung ban ghi kem MON HOC, nam hoc, lop, hoc ky de nguoi doc khong nham lan.
-- Khi nguoi dung hoi diem CHUNG CHUNG (khong neu mon cu the) va du lieu co nhieu mon, hay
-  trinh bay diem cua TUNG MON (nen nhom theo mon, hoac dung bang), day du tat ca cac mon co
-  trong du lieu — khong tu y bo bot mon nao.
+- Khi nguoi dung hoi diem CHUNG CHUNG (khong neu mon cu the) va du lieu co nhieu mon, BAT BUOC phai trinh bay theo dung khuon mau sau:
+  1. Cac mon danh gia bang diem so
+  (Liet ke cac mon co diem)
+  2. Cac mon danh gia bang nhan xet (Dat / Chua dat)
+  (Cac mon nay danh gia bang nhan xet, khong cham diem)
+  (Liet ke cac mon co ket qua Dat/Chua dat)
+  Day du tat ca cac mon co trong du lieu — tuyet doi khong tu y bo bot mon nao.
 - Khi nguoi dung hoi ve MOT mon cu the, chi trinh bay diem cua dung mon do.
 - Mot so mon danh gia bang NHAN XET (vd: The duc, Am nhac, My thuat, Hoat dong trai nghiem
   huong nghiep, Noi dung giao duc dia phuong) KHONG co diem so, chi co ket qua "Dat" / "Chua dat"
@@ -115,7 +119,7 @@ def build_no_roster_params_prompt(question: str, missing: List[str]) -> str:
     return (
         f"Cau hoi hoi ve danh sach lop nhung con thieu thong tin: {', '.join(missing)}.\n\n"
         f"Cau hoi cua nguoi dung: {question}\n\n"
-        f"Hay lich su de nghi nguoi dung cung cap ro ten lop (vd: 7A) va nam hoc (vd: 2025-2026)."
+        f"Hay lich su de nghi nguoi dung cung cap ro cac thong tin con thieu nay."
     )
 
 
@@ -190,7 +194,7 @@ def build_no_timetable_params_prompt(question: str, missing: List[str]) -> str:
     return (
         f"Cau hoi hoi ve thoi khoa bieu nhung con thieu thong tin: {', '.join(missing)}.\n\n"
         f"Cau hoi cua nguoi dung: {question}\n\n"
-        f"Hay lich su de nghi nguoi dung cung cap ro ten lop (vd: 7A) va nam hoc (vd: 2025-2026)."
+        f"Hay lich su de nghi nguoi dung cung cap ro cac thong tin con thieu nay."
     )
 
 
@@ -337,7 +341,7 @@ def build_no_exam_params_prompt(question: str, missing: List[str]) -> str:
     return (
         f"Cau hoi hoi ve lich thi nhung con thieu thong tin: {', '.join(missing)}.\n\n"
         f"Cau hoi cua nguoi dung: {question}\n\n"
-        f"Hay lich su de nghi nguoi dung cung cap ro ten lop (vd: 7A) va nam hoc (vd: 2025-2026)."
+        f"Hay lich su de nghi nguoi dung cung cap ro cac thong tin con thieu nay."
     )
 
 

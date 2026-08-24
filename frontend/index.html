@@ -4,9 +4,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>🎓 Tư Vấn Tuyển Sinh AI — CMC University</title>
+    <title>📊 Tra Cứu Điểm Học Sinh</title>
     <meta name="description"
-        content="Chatbot AI tư vấn tuyển sinh Trường Đại học CMC — Trả lời chính xác từ tài liệu chính thức.">
+        content="Chatbot AI tra cứu điểm số, xếp loại, thời khóa biểu, lịch thi và thông tin học sinh.">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -45,8 +45,8 @@
 
         <div class="sidebar-footer">
             <div class="sidebar-footer-info">
-                <span class="footer-icon">🎓</span>
-                <span>CMC University AI</span>
+                <span class="footer-icon">📊</span>
+                <span>Tra Cứu Điểm AI</span>
             </div>
         </div>
     </aside>
@@ -63,9 +63,9 @@
             <h1 class="topbar-title" id="topbarTitle">Chat mới</h1>
             <div class="topbar-actions" style="display: flex; align-items: center; gap: 15px;">
                 <select id="llmProvider" class="provider-select" title="Chọn Mô Hình AI">
-                    <option value="openrouter" selected>Nemotron 70B (Nvidia)</option>
+                    <option value="gemini" selected>Gemini (mặc định)</option>
                     <option value="groq">Qwen3 32B (Groq)</option>
-                    <option value="gemini">Gemini (from GEMINI_MODEL)</option>
+                    <option value="openrouter">Nemotron 70B (OpenRouter)</option>
                     <option value="gemini_2_5_flash">Gemini 2.5 Flash</option>
                     <option value="gemini_2_0_flash">Gemini 2.0 Flash</option>
                     <option value="gemini_1_5_flash">Gemini 1.5 Flash</option>
@@ -82,37 +82,38 @@
         <div class="chat-container" id="chatContainer">
             <!-- Welcome screen -->
             <div class="welcome-screen" id="welcomeScreen">
-                <div class="welcome-logo">🎓</div>
-                <h2 class="welcome-title">Tư Vấn Tuyển Sinh CMC University</h2>
-                <p class="welcome-subtitle">Hỏi bất kỳ điều gì về tuyển sinh, ngành học, điểm chuẩn, học bổng...</p>
+                <div class="welcome-logo">📊</div>
+                <h2 class="welcome-title">Tra Cứu Điểm Học Sinh</h2>
+                <p class="welcome-subtitle">Hỏi về điểm số, xếp loại, thời khóa biểu, lịch thi, giáo viên, điểm
+                    danh...</p>
 
                 <div class="suggestions" id="suggestions">
                     <button class="suggestion-card"
-                        data-question="Điểm chuẩn trúng tuyển các ngành năm 2024 là bao nhiêu?">
+                        data-question="Xếp loại học lực học kỳ I của Nguyễn Nông Bảo An năm 2025-2026?">
                         <span class="suggestion-icon">📊</span>
-                        <span class="suggestion-text">Điểm chuẩn trúng tuyển các ngành năm 2024?</span>
+                        <span class="suggestion-text">Xếp loại học lực học kỳ I?</span>
                     </button>
-                    <button class="suggestion-card" data-question="Các phương thức xét tuyển năm 2025 của trường CMC?">
+                    <button class="suggestion-card"
+                        data-question="Điểm trung bình lớp 6A môn Toán học kỳ I năm 2025-2026?">
+                        <span class="suggestion-icon">📈</span>
+                        <span class="suggestion-text">Điểm trung bình lớp 6A môn Toán?</span>
+                    </button>
+                    <button class="suggestion-card"
+                        data-question="Giáo viên chủ nhiệm lớp 6A năm học 2025-2026 là ai?">
+                        <span class="suggestion-icon">👩‍🏫</span>
+                        <span class="suggestion-text">Giáo viên chủ nhiệm lớp 6A?</span>
+                    </button>
+                    <button class="suggestion-card" data-question="Thời khóa biểu lớp 6A?">
+                        <span class="suggestion-icon">📅</span>
+                        <span class="suggestion-text">Thời khóa biểu lớp 6A?</span>
+                    </button>
+                    <button class="suggestion-card" data-question="Lịch thi sắp tới?">
                         <span class="suggestion-icon">📝</span>
-                        <span class="suggestion-text">Các phương thức xét tuyển năm 2025?</span>
+                        <span class="suggestion-text">Lịch thi sắp tới?</span>
                     </button>
-                    <button class="suggestion-card"
-                        data-question="Học phí các ngành tại trường Đại học CMC như thế nào?">
-                        <span class="suggestion-icon">💰</span>
-                        <span class="suggestion-text">Học phí các ngành như thế nào?</span>
-                    </button>
-                    <button class="suggestion-card" data-question="Có những chính sách học bổng nào cho sinh viên?">
-                        <span class="suggestion-icon">🎯</span>
-                        <span class="suggestion-text">Chính sách học bổng cho sinh viên?</span>
-                    </button>
-                    <button class="suggestion-card"
-                        data-question="So sánh ngành Công nghệ thông tin và Khoa học máy tính tại CMC">
-                        <span class="suggestion-icon">🔍</span>
-                        <span class="suggestion-text">So sánh ngành CNTT và KHMT?</span>
-                    </button>
-                    <button class="suggestion-card" data-question="Trường Đại học CMC có những ngành đào tạo nào?">
-                        <span class="suggestion-icon">🎓</span>
-                        <span class="suggestion-text">Trường CMC có những ngành nào?</span>
+                    <button class="suggestion-card" data-question="Có thông báo mới nào không?">
+                        <span class="suggestion-icon">🔔</span>
+                        <span class="suggestion-text">Thông báo mới?</span>
                     </button>
                 </div>
             </div>
@@ -123,34 +124,9 @@
 
         <!-- Input area -->
         <div class="input-area" id="inputArea">
-            <!-- Hidden file input for image upload -->
-            <input type="file" id="imageFileInput" accept="image/*" style="display:none">
-
-            <!-- Image preview (shown when an image is selected) -->
-            <div class="image-preview-container" id="imagePreviewContainer">
-                <div class="image-preview-inner">
-                    <img id="imagePreviewImg" src="" alt="Preview">
-                    <button class="image-preview-remove" id="imagePreviewRemove" title="Xóa ảnh">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                            stroke-width="2.5">
-                            <path d="M18 6L6 18M6 6l12 12" />
-                        </svg>
-                    </button>
-                </div>
-            </div>
-
             <div class="input-wrapper">
-                <!-- Upload image button -->
-                <button class="upload-img-btn" id="uploadImgBtn" title="Tải ảnh lên để OCR">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                        stroke-width="1.8">
-                        <rect x="3" y="3" width="18" height="18" rx="3" />
-                        <circle cx="8.5" cy="8.5" r="1.5" />
-                        <path d="M21 15l-5-5L5 21" />
-                    </svg>
-                </button>
-
-                <textarea id="messageInput" placeholder="Nhập câu hỏi tuyển sinh..." rows="1" autofocus></textarea>
+                <textarea id="messageInput" placeholder="Hỏi về điểm, xếp loại, thời khóa biểu, giáo viên..." rows="1"
+                    autofocus></textarea>
                 <button class="send-btn" id="sendBtn" title="Gửi" disabled>
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                         stroke-width="2.5">

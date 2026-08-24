@@ -74,7 +74,7 @@ def get_llm(provider: str = "openrouter"):
         _llms[provider] = ChatGoogleGenerativeAI(
             model=selected_model,
             temperature=GEMINI_TEMPERATURE,
-            max_tokens=GEMINI_MAX_TOKENS,
+            max_output_tokens=GEMINI_MAX_TOKENS,
             google_api_key=GEMINI_API_KEY,
         )
         logger.info(f"LLM đã khởi tạo (Gemini): {selected_model}")

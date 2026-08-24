@@ -3,6 +3,7 @@
 # thoi khoa bieu / ...) -> trich xuat bo loc (ten/lop/nam hoc/hoc ky) ->
 # tra cuu (co ap dung gioi han theo vai tro dang nhap) -> LLM dien giai ket qua.
 
+import json
 import logging
 import re
 from dataclasses import dataclass, field
@@ -39,9 +40,6 @@ logging.basicConfig(level=LOG_LEVEL, format=LOG_FORMAT)
 logger = logging.getLogger(__name__)
 
 
-import json
-import re
-
 _STUDENT_CODE_RE = re.compile(r"\bHS\d{3,}\b", re.IGNORECASE)
 
 # Cac cum bao hieu nguoi dung muon xem diem CUA TAT CA CAC NAM HOC (khong gioi han nam hien tai).
@@ -55,8 +53,17 @@ def wants_all_years(question: str) -> bool:
     q = question.lower()
     return any(k in q for k in _ALL_YEARS_KEYWORDS)
 
-def analyze_query_llm(question: str, history: Optional[List[dict]] = None) -> dict:
-    """Su dung LLM de phan loai y dinh va trich xuat filter cung 1 luc."""
+def analyze_query_llm(
+    question: str,
+    history: Optional[List[dict]] = None,
+    prev_context: Optional[dict] = None,
+) -> dict:
+    """Su dung LLM de phan loai y dinh va trich xuat filter cung 1 luc.
+
+    prev_context (optional): ngu canh hoi thoai tu luot truoc, dang
+    {"intent": "...", "filters": {"name_query": ..., ...}}.  Duoc chen vao
+    prompt de LLM quyet dinh ke thua hay ghi de tung filter — giup xu ly cau
+    hoi noi tiep ("con hoc ky 2?", "diem Toan cua ban ay?") tot hon."""
     from src.llm.llm_chain import get_llm
     from langchain_core.messages import SystemMessage, HumanMessage
     
@@ -65,7 +72,36 @@ def analyze_query_llm(question: str, history: Optional[List[dict]] = None) -> di
         recent = [h["content"] for h in history[-4:] if h["role"] == "user"]
         if recent:
             context_str = "\nCác câu hỏi trước đó: " + " | ".join(recent)
-            
+
+    # --- Khoi ngu canh luot truoc ---
+    prev_context_str = ""
+    if prev_context and prev_context.get("filters"):
+        pf = prev_context["filters"]
+        parts = []
+        label_map = {
+            "name_query": "Tên học sinh",
+            "class_name": "Lớp",
+            "school_year": "Năm học",
+            "semester": "Học kỳ",
+            "subject": "Môn học",
+        }
+        for key, label in label_map.items():
+            val = pf.get(key)
+            if val:
+                parts.append(f"  - {label}: {val}")
+        if parts:
+            prev_intent = prev_context.get("intent", "")
+            prev_context_str = (
+                f"\n\nNGỮ CẢNH TỪ CÂU HỎI TRƯỚC (intent trước: {prev_intent}):\n"
+                + "\n".join(parts)
+                + "\n\nQUY TẮC KẾ THỪA NGỮ CẢNH:\n"
+                "- Nếu câu hỏi hiện tại là câu nối tiếp (thiếu tên/lớp/năm/môn...), "
+                "hãy KẾ THỪA các giá trị từ ngữ cảnh trước mà câu hỏi hiện tại không đề cập.\n"
+                "- Chỉ GHI ĐÈ khi người dùng nêu rõ giá trị mới (vd: nói tên khác, lớp khác).\n"
+                "- Nếu câu hỏi hoàn toàn khác chủ đề (intent khác hẳn), KHÔNG kế thừa "
+                "tên học sinh / mã HS từ ngữ cảnh trước.\n"
+            )
+
     prompt = f"""Bạn là một chuyên gia phân tích ngữ nghĩa. Nhiệm vụ của bạn là phân tích câu hỏi của người dùng và trả về MỘT chuỗi JSON duy nhất chứa ý định và các thông tin cần thiết.
     
 CHỈ TRẢ VỀ JSON HỢP LỆ, KHÔNG BAO GỒM BẤT KỲ VĂN BẢN NÀO KHÁC (KHÔNG DÙNG ```json ... ``` MARKDOWN).
@@ -97,7 +133,7 @@ CHỈ TRẢ VỀ JSON HỢP LỆ, KHÔNG BAO GỒM BẤT KỲ VĂN BẢN NÀO KH
 Nếu không tìm thấy thông tin cho một filter nào đó, hãy để giá trị là null.
 Đối với môn học, cố gắng chuyển tên môn viết tắt hoặc không dấu (vd: khtn, ly, gdcd) về tên chuẩn (Khoa học tự nhiên, Giáo dục công dân...).
 Tên học sinh: Hãy loại bỏ các đại từ xưng hô, chỉ lấy tên riêng.
-
+{prev_context_str}
 {context_str}
 Câu hỏi hiện tại: {question}"""
 
@@ -126,8 +162,6 @@ Câu hỏi hiện tại: {question}"""
             data["filters"] = {}
         filters = data["filters"]
         
-        # Normalize subject (optional) - the LLM usually gets it right
-        # Provide default filter keys expected by functions
         return {
             "intent": data.get("intent", "grade"),
             "filters": {
@@ -730,10 +764,16 @@ class ChatbotEngine:
     def _build_lookup(self, question: str, session_user=None) -> _LookupResult:
         session_id = self._session_id_for(session_user)
         history = self.memory.get_chat_history(session_id)
-        
-        analysis = analyze_query_llm(question, history)
+
+        # Doc ngu canh hoi thoai tu luot truoc (neu co) de truyen cho LLM
+        prev_context = self.memory.get_last_context(session_id)
+
+        analysis = analyze_query_llm(question, history, prev_context=prev_context)
         intent = analysis["intent"]
         filters = analysis["filters"]
+
+        # Luu ngu canh hoi thoai hien tai cho luot sau ke thua
+        self.memory.save_context(session_id, intent, filters)
 
         # Gan mac dinh nam hoc hien tai neu khong cung cap va khong phai "tat ca cac nam"
         if not filters.get("school_year") and not wants_all_years(question):
