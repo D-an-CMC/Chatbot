@@ -1,18 +1,17 @@
 # api.py
-# FastAPI backend cho Chatbot Tuyen Sinh CMC University
+# FastAPI backend cho Chatbot Tra Cuu Diem Hoc Sinh
 # Chay: python api.py  hoac  uvicorn api:app --reload
-# http://localhost:8000/app để vào giao diện
+# http://localhost:8000/app de vao giao dien
 
 import json
 import logging
 import asyncio
-import tempfile
-import shutil
+import jwt
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -24,13 +23,11 @@ from config import (
     LOG_FORMAT, LOG_LEVEL,
 )
 from src.engine.chatbot import ChatbotEngine
-from src.llm.response_builder import format_for_display
+from src.llm.response_builder import format_for_display, strip_think_tags
 from src.observability.langfuse_tracer import flush_langfuse, get_langfuse_client
-from src.rag.ingest import get_ingest_status, run_ingest
 
 logging.basicConfig(level=LOG_LEVEL, format=LOG_FORMAT)
 logger = logging.getLogger(__name__)
-
 
 # ---------------------------------------------------------------------------
 # Pydantic Models
@@ -39,58 +36,55 @@ logger = logging.getLogger(__name__)
 class ChatRequest(BaseModel):
     question: str = Field(..., min_length=1, max_length=2000, description="Cau hoi cua nguoi dung")
     provider: str = Field(
-        "openrouter",
-        description="LLM provider: openrouter, groq, gemini, gemini_2_5_flash, gemini_2_0_flash, gemini_1_5_flash, gemini_1_5_flash_8b",
+        "gemini",
+        description="LLM provider",
     )
-
-
-class CitationItem(BaseModel):
-    index: int
-    source_file: str
-    page_number: Optional[int] = None
-    admission_cycle: Optional[str] = None
-    document_type: Optional[str] = None
-    confidence: float = 1.0
-
-
-class WebCitationItem(BaseModel):
-    index: int
-    title: str
-    url: str
-    domain: str
-    is_official: bool = False
-
 
 class ChatResponse(BaseModel):
     answer: str = Field(..., description="Cau tra loi day du (bao gom citations)")
-    rag_citations: List[CitationItem] = Field(default_factory=list)
-    web_citations: List[WebCitationItem] = Field(default_factory=list)
+    citations: List[str] = Field(default_factory=list)
     warnings: List[str] = Field(default_factory=list)
-    has_low_confidence: bool = False
+    has_data: bool = False
     metadata: Dict[str, Any] = Field(default_factory=dict)
-
 
 class StatusResponse(BaseModel):
     status: str
     engine_ready: bool
     index_stats: Dict[str, Any] = Field(default_factory=dict)
-    ingest_status: Dict[str, Any] = Field(default_factory=dict)
     timestamp: str
-
-
-class ProfileResponse(BaseModel):
-    summary: str
-    raw: Dict[str, Any] = Field(default_factory=dict)
-
-
-class IngestRequest(BaseModel):
-    force: bool = Field(False, description="Force rebuild toan bo index")
-
 
 class MessageResponse(BaseModel):
     message: str
     success: bool = True
 
+class AiChatRequest(BaseModel):
+    question: str
+    conversationId: Optional[int] = None
+    provider: str = "gemini"
+
+class AiToolStepData(BaseModel):
+    columns: Optional[List[str]] = None
+    rows: Optional[List[List[Any]]] = None
+    rowCount: Optional[int] = None
+    limited: Optional[int] = None
+    sql: Optional[str] = None
+    error: Optional[str] = None
+    subtables: Optional[List[Dict[str, Any]]] = None
+
+class AiToolStep(BaseModel):
+    tool: str
+    summary: str
+    data: Optional[AiToolStepData] = None
+
+class AiCitation(BaseModel):
+    source_file: str
+    title: str
+    page_number: Optional[int] = None
+    chunk_index: Optional[int] = None
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
 
 # ---------------------------------------------------------------------------
 # App & Engine
@@ -106,29 +100,32 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=API_CORS_ORIGINS,
+    allow_origins=["*"], # Cho phep Next.js de dang connect
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Singleton engine
 _engine: Optional[ChatbotEngine] = None
-_ingest_running = False
-
 
 def get_engine() -> ChatbotEngine:
     global _engine
     if _engine is None:
         raise HTTPException(status_code=503, detail="Engine chua san sang. Dang khoi tao...")
     if not _engine.is_ready():
-        raise HTTPException(status_code=503, detail="Index chua duoc load. Chay `python ingest.py` truoc.")
+        raise HTTPException(status_code=503, detail="Chua co du lieu diem. Kiem tra Supabase hoac dat file Excel vao thu muc data/.")
     return _engine
 
-
-# ---------------------------------------------------------------------------
-# Startup / Shutdown
-# ---------------------------------------------------------------------------
+async def get_current_user(request: Request) -> str:
+    auth = request.headers.get("Authorization")
+    if auth and auth.startswith("Bearer "):
+        token = auth.split(" ")[1]
+        try:
+            payload = jwt.decode(token, options={"verify_signature": False})
+            return payload.get("sub", "anonymous")
+        except Exception:
+            pass
+    return "anonymous"
 
 @app.on_event("startup")
 async def startup_event():
@@ -139,304 +136,165 @@ async def startup_event():
     if _engine.is_ready():
         logger.info("Engine da san sang!")
     else:
-        logger.warning("Engine khoi tao nhung index chua co. Chay `python ingest.py`.")
+        logger.warning("Engine khoi tao nhung chua co du lieu diem.")
     get_langfuse_client()
-
 
 @app.on_event("shutdown")
 async def shutdown_event():
     flush_langfuse()
 
-
 # ---------------------------------------------------------------------------
-# Endpoints
+# Original Chatbot Endpoints
 # ---------------------------------------------------------------------------
 
 @app.get("/", response_model=MessageResponse, tags=["Health"])
 async def health_check():
-    """Health check — kiem tra server con song."""
-    return MessageResponse(
-        message=f"{APP_ICON} {APP_TITLE} API dang hoat dong!",
-        success=True,
-    )
-
+    return MessageResponse(message=f"{APP_ICON} {APP_TITLE} API dang hoat dong!", success=True)
 
 @app.get("/status", response_model=StatusResponse, tags=["System"])
 async def system_status():
-    """Trang thai tong quan cua he thong."""
     global _engine
     engine_ready = _engine is not None and _engine.is_ready()
     index_stats = _engine.get_index_stats() if _engine is not None and _engine.is_ready() else {}
-    ingest = get_ingest_status()
-
     return StatusResponse(
         status="San sang" if engine_ready else "Chua san sang",
         engine_ready=engine_ready,
         index_stats=index_stats,
-        ingest_status=ingest,
         timestamp=datetime.now().isoformat(),
     )
 
-
 @app.post("/chat", response_model=ChatResponse, tags=["Chat"])
 async def chat(request: ChatRequest):
-    """Chat dong bo — gui cau hoi, nhan toan bo cau tra loi."""
     engine = get_engine()
-
     try:
         response = engine.chat(request.question, provider=request.provider)
-        citations = [
-            CitationItem(
-                index=c.index,
-                source_file=c.source_file,
-                page_number=c.page_number,
-                admission_cycle=c.admission_cycle,
-                document_type=c.document_type,
-                confidence=c.confidence,
-            )
-            for c in response.rag_citations
-        ]
-        web_citations = [
-            WebCitationItem(
-                index=c.index,
-                title=c.title,
-                url=c.url,
-                domain=c.domain,
-                is_official=c.is_official,
-            )
-            for c in response.web_citations
-        ]
         return ChatResponse(
             answer=format_for_display(response),
-            rag_citations=citations,
-            web_citations=web_citations,
+            citations=response.citations,
             warnings=response.warnings,
-            has_low_confidence=response.has_low_confidence,
+            has_data=response.metadata.get("has_data", False),
             metadata=response.metadata,
         )
-    except RuntimeError as e:
-        raise HTTPException(status_code=500, detail=str(e))
     except Exception as e:
         logger.error(f"Loi chat: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Loi xu ly cau hoi: {e}")
 
-
 @app.post("/chat/stream", tags=["Chat"])
 async def chat_stream(request: ChatRequest):
-    """Chat streaming — tra ve tung token qua SSE (Server-Sent Events).
-
-    Moi event co dang:
-    - `data: {"token": "..."}` — 1 token moi
-    - `data: {"done": true, "citations": [...], "warnings": [...]}` — ket thuc
-    """
     engine = get_engine()
-
     try:
-        stream_gen, retrieved_chunks = engine.chat_streaming(request.question, provider=request.provider)
+        stream_gen, lookup = engine.chat_streaming(request.question, provider=request.provider)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
     async def event_generator():
         full_text = ""
         try:
-            for token in stream_gen:
-                full_text += token
-                yield f"data: {json.dumps({'token': token}, ensure_ascii=False)}\n\n"
-                await asyncio.sleep(0)  # yield control to event loop
-
-            # Finalize response
-            response = engine.finalize_streaming_response(
-                full_text=full_text,
-                retrieved_chunks=retrieved_chunks,
-                question=request.question,
-            )
-            citations = [
-                {
-                    "index": c.index,
-                    "source_file": c.source_file,
-                    "page_number": c.page_number,
-                    "admission_cycle": c.admission_cycle,
-                    "document_type": c.document_type,
-                    "confidence": c.confidence,
-                }
-                for c in response.rag_citations
-            ]
-            web_citations = [
-                {
-                    "index": c.index,
-                    "title": c.title,
-                    "url": c.url,
-                    "domain": c.domain,
-                    "is_official": c.is_official,
-                }
-                for c in response.web_citations
-            ]
-            done_payload = {
-                "done": True,
-                "full_answer": format_for_display(response),
-                "rag_citations": citations,
-                "web_citations": web_citations,
-                "warnings": response.warnings,
-                "metadata": response.metadata,
-            }
-            yield f"data: {json.dumps(done_payload, ensure_ascii=False)}\n\n"
-
-        except Exception as e:
-            logger.error(f"Loi streaming: {e}", exc_info=True)
-            yield f"data: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
-
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
-
-
-@app.post("/chat/stream/image", tags=["Chat"])
-async def chat_stream_image(
-    image: UploadFile = File(..., description="Image file (jpg/png/webp)"),
-    question: str = Form("", description="Optional question about the image"),
-    provider: str = Form("openrouter", description="LLM provider"),
-):
-    """Upload image + OCR + chat streaming.
-
-    Accepts multipart/form-data with an image file.
-    Runs OCR, then streams the LLM answer via SSE.
-    """
-    engine = get_engine()
-
-    # Save uploaded file to temp dir
-    _upload_dir = Path(__file__).parent / "_uploads"
-    _upload_dir.mkdir(exist_ok=True)
-    suffix = Path(image.filename or "img.png").suffix or ".png"
-    tmp_path = _upload_dir / f"ocr_{datetime.now().strftime('%Y%m%d_%H%M%S')}{suffix}"
-    try:
-        with open(tmp_path, "wb") as f:
-            shutil.copyfileobj(image.file, f)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Loi luu file: {e}")
-
-    try:
-        ocr_result, stream_gen = engine.chat_with_image_streaming(
-            image_path=str(tmp_path),
-            question=question or "",
-            provider=provider
-        )
-    except RuntimeError as e:
-        tmp_path.unlink(missing_ok=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-    async def event_generator():
-        full_text = ""
-        try:
-            # Send OCR result first so frontend can show it
-            ocr_event = {
-                "ocr_done": True,
-                "ocr_result": ocr_result,
-            }
-            yield f"data: {json.dumps(ocr_event, ensure_ascii=False)}\n\n"
-            await asyncio.sleep(0)
-
             for token in stream_gen:
                 full_text += token
                 yield f"data: {json.dumps({'token': token}, ensure_ascii=False)}\n\n"
                 await asyncio.sleep(0)
 
+            full_text = strip_think_tags(full_text)
+            response = engine.finalize_streaming_response(full_text=full_text, lookup=lookup, question=request.question)
             done_payload = {
                 "done": True,
-                "full_answer": full_text,
-                "citations": [],
-                "warnings": [],
-                "metadata": {"ocr_result": ocr_result},
+                "full_answer": format_for_display(response),
+                "citations": response.citations,
+                "warnings": response.warnings,
+                "metadata": response.metadata,
             }
             yield f"data: {json.dumps(done_payload, ensure_ascii=False)}\n\n"
         except Exception as e:
-            logger.error(f"Loi streaming (image): {e}", exc_info=True)
             yield f"data: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
-        finally:
-            # Clean up temp file
-            tmp_path.unlink(missing_ok=True)
 
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
-
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 @app.post("/session/clear", response_model=MessageResponse, tags=["Session"])
 async def clear_session():
-    """Xoa session hien tai (xoa short-term memory)."""
     engine = get_engine()
     engine.clear_session()
     return MessageResponse(message="Da xoa session thanh cong.")
 
+# ---------------------------------------------------------------------------
+# Next.js AI Endpoints
+# ---------------------------------------------------------------------------
 
-@app.get("/profile", response_model=ProfileResponse, tags=["Profile"])
-async def get_profile():
-    """Xem ho so nguoi dung (tu dong nhan dien tu hoi thoai)."""
+@app.post("/api/ai/chat/stream", tags=["NextJS AI"])
+async def ai_chat_stream_nextjs(request: AiChatRequest, user_id: str = Depends(get_current_user)):
     engine = get_engine()
-    from dataclasses import asdict
-    return ProfileResponse(
-        summary=engine.get_profile_summary(),
-        raw=asdict(engine.memory.profile.profile),
-    )
+    conv_id = request.conversationId
+    if not conv_id:
+        title = request.question[:50] + "..." if len(request.question) > 50 else request.question
+        conv_id = engine.memory.create_ai_conversation(user_id=user_id, title=title)
+    
+    msgs = engine.memory.get_ai_messages(conv_id)
+    session_id = f"nextjs_{conv_id}"
+    engine.memory.clear_session(session_id)
+    for m in msgs:
+        engine.memory.short_term.add_turn(session_id, m["role"], m["content"])
 
+    try:
+        stream_gen, lookup = engine.chat_streaming(request.question, provider=request.provider, session_user=None)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-@app.delete("/profile", response_model=MessageResponse, tags=["Profile"])
-async def reset_profile():
-    """Reset ho so nguoi dung."""
+    async def event_generator():
+        yield f"event: thought\ndata: {json.dumps({'summary': 'Đang phân tích câu hỏi...'})}\n\n"
+        await asyncio.sleep(0.1)
+
+        tools_used = []
+        if lookup.has_data:
+            tool_data = AiToolStepData(columns=["Kết quả tra cứu"], rows=[["Đã tìm thấy dữ liệu"]])
+            tool_step = AiToolStep(tool="database_lookup", summary="Tra cứu thông tin", data=tool_data)
+            tools_used.append(tool_step.dict())
+            yield f"event: tool\ndata: {json.dumps(tool_step.dict())}\n\n"
+            await asyncio.sleep(0.1)
+
+        full_text = ""
+        for token in stream_gen:
+            full_text += token
+            await asyncio.sleep(0)
+        
+        full_text = strip_think_tags(full_text)
+        cites = [AiCitation(source_file=c, title=c).dict() for c in lookup.citations]
+
+        engine.memory.add_ai_message(conv_id, "user", request.question)
+        engine.memory.add_ai_message(conv_id, "assistant", full_text, tools_used=tools_used, citations=cites)
+
+        done_payload = {
+            "answer": full_text,
+            "steps": tools_used,
+            "citations": cites,
+            "warnings": [],
+            "conversationId": conv_id
+        }
+        yield f"event: done\ndata: {json.dumps(done_payload)}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+@app.post("/api/ai/chat", tags=["NextJS AI"])
+async def ai_chat_sync_nextjs(request: AiChatRequest, user_id: str = Depends(get_current_user)):
+    raise HTTPException(status_code=501, detail="Vui lòng dùng stream")
+
+@app.get("/api/ai/conversations", tags=["NextJS AI"])
+async def get_conversations(user_id: str = Depends(get_current_user)):
     engine = get_engine()
-    engine.reset_profile()
-    return MessageResponse(message="Da reset ho so nguoi dung.")
+    convs = engine.memory.get_ai_conversations(user_id)
+    return {"success": True, "data": convs}
 
-
-@app.get("/ingest/status", tags=["Ingest"])
-async def ingest_status():
-    """Xem trang thai index hien tai."""
-    return get_ingest_status()
-
-
-@app.post("/ingest", response_model=MessageResponse, tags=["Ingest"])
-async def trigger_ingest(request: IngestRequest, background_tasks: BackgroundTasks):
-    """Trigger ingest tai lieu moi (chay background)."""
-    global _ingest_running, _engine
-
-    if _ingest_running:
-        raise HTTPException(status_code=409, detail="Ingest dang chay. Vui long doi.")
-
-    def _run_ingest():
-        global _ingest_running, _engine
-        _ingest_running = True
-        try:
-            success = run_ingest(force_rebuild=request.force)
-            if success and _engine is not None:
-                _engine.reload_index()
-                logger.info("Da reload index sau ingest.")
-        except Exception as e:
-            logger.error(f"Ingest that bai: {e}")
-        finally:
-            _ingest_running = False
-
-    background_tasks.add_task(_run_ingest)
-
-    mode = "Force rebuild" if request.force else "Incremental"
-    return MessageResponse(message=f"Da bat dau ingest ({mode}). Theo doi tai /ingest/status.")
-
-
-@app.get("/tools", tags=["System"])
-async def list_tools():
-    """Danh sach tools ma Agent ho tro."""
+@app.get("/api/ai/conversations/{conv_id}", tags=["NextJS AI"])
+async def get_conversation_messages(conv_id: int, user_id: str = Depends(get_current_user)):
     engine = get_engine()
-    return engine.get_available_tools()
+    msgs = engine.memory.get_ai_messages(conv_id)
+    return {"success": True, "data": {"conversationId": conv_id, "messages": msgs}}
+
+@app.delete("/api/ai/conversations/{conv_id}", tags=["NextJS AI"])
+async def delete_conversation(conv_id: int, user_id: str = Depends(get_current_user)):
+    engine = get_engine()
+    engine.memory.delete_ai_conversation(conv_id)
+    return {"success": True}
+
 
 
 # ---------------------------------------------------------------------------
@@ -448,22 +306,17 @@ if _frontend_dir.exists():
     @app.get("/app", include_in_schema=False)
     async def redirect_to_app():
         return RedirectResponse(url="/app/")
-
     app.mount("/app", StaticFiles(directory=str(_frontend_dir), html=True), name="frontend")
-
-
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     import uvicorn
-    print(f"\n  Frontend: http://localhost:{API_PORT}/app")
-    print(f"  API Docs: http://localhost:{API_PORT}/docs\n")
+    # Dùng port 3001 thay vì API_PORT để không làm gián đoạn cấu hình hiện tại của Next.js Client
+    print(f"\n  Frontend: http://localhost:3001/app")
+    print(f"  API Docs: http://localhost:3001/docs\n")
     uvicorn.run(
         "api:app",
         host=API_HOST,
-        port=API_PORT,
+        port=3001,
         reload=False,
         log_level="info",
     )
